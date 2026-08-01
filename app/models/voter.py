@@ -14,6 +14,7 @@ class VoterRecord(BaseModel):
     house_number: str | None = None
     age: int | None = None
     gender: str | None = None
+    deleted: bool | None = None
     raw_text: str | None = None
 
 

@@ -1,7 +1,9 @@
 """Pipeline orchestration service for electoral roll OCR processing."""
 
+import signal
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from app.config.settings import get_settings
@@ -18,6 +20,10 @@ from app.utils.file_utils import ensure_directory, load_image
 from app.utils.logging import get_logger, log_exception
 
 logger = get_logger(__name__)
+
+
+class EntryProcessingTimeoutError(TimeoutError):
+    """Raised when a single crop exceeds the configured processing limit."""
 
 
 class ElectoralRollPipelineService:
@@ -47,6 +53,8 @@ class ElectoralRollPipelineService:
         self.crops_root_dir = crops_root_dir
         self.deleted_entries_dir = settings.deleted_entries_dir
         self.normal_entries_dir = settings.normal_entries_dir
+        self.entry_timeout_seconds = settings.entry_timeout_seconds
+        self.timed_out_entries_dir = settings.timed_out_entries_dir
 
     def process_pdf(
         self,
@@ -71,6 +79,7 @@ class ElectoralRollPipelineService:
 
         pdf_output_name = pdf_path.stem
         self._reset_classified_output_dirs(pdf_output_name)
+        self._reset_timeout_log(pdf_output_name)
         crops_root_dir = ensure_directory(
             self.crops_root_dir or self.pdf_service.pages_root_dir.parent / "crops" / pdf_output_name
         )
@@ -113,18 +122,31 @@ class ElectoralRollPipelineService:
         pdf_output_name = pdf_path.stem
         for crop_item in crop_metadata:
             try:
-                ocr_result = self.ocr_service.run_ocr(crop_item.image_path)
-                deleted_result = self.deleted_entry_service.detect_deleted_entry_from_path(crop_item.image_path)
-                self._archive_classified_crop(
-                    pdf_name=pdf_output_name,
-                    crop_path=crop_item.image_path,
-                    is_deleted=deleted_result.deleted,
+                with self._entry_timeout(crop_item.image_path):
+                    ocr_result = self.ocr_service.run_ocr(crop_item.image_path)
+                    deleted_result = self.deleted_entry_service.detect_deleted_entry_from_path(crop_item.image_path)
+                    self._archive_classified_crop(
+                        pdf_name=pdf_output_name,
+                        crop_path=crop_item.image_path,
+                        is_deleted=deleted_result.deleted,
+                    )
+                    record = self.extraction_service.parse_voter_record(ocr_result)
+                    record.deleted = deleted_result.deleted
+                    self.validation_service.validate_record(record, ocr_result, deleted_result)
+                    records.append(record)
+                    if on_record_processed is not None:
+                        on_record_processed(record)
+            except EntryProcessingTimeoutError:
+                self._record_timed_out_entry(pdf_output_name, crop_item.image_path)
+                logger.warning(
+                    "Entry processing timed out and was skipped",
+                    extra={
+                        "image_path": str(crop_item.image_path),
+                        "page": crop_item.page,
+                        "entry_index": crop_item.entry_index,
+                        "timeout_seconds": self.entry_timeout_seconds,
+                    },
                 )
-                record = self.extraction_service.parse_voter_record(ocr_result)
-                self.validation_service.validate_record(record, ocr_result, deleted_result)
-                records.append(record)
-                if on_record_processed is not None:
-                    on_record_processed(record)
             except Exception:
                 log_exception(
                     logger,
@@ -149,3 +171,41 @@ class ElectoralRollPipelineService:
             target_dir = root_dir / pdf_name
             if target_dir.exists():
                 shutil.rmtree(target_dir)
+
+    def _reset_timeout_log(self, pdf_name: str) -> None:
+        """Clear previous timeout records for the current PDF run."""
+        timeout_log = self._timeout_log_path(pdf_name)
+        ensure_directory(timeout_log.parent)
+        timeout_log.write_text("", encoding="utf-8")
+
+    def _record_timed_out_entry(self, pdf_name: str, image_path: Path) -> None:
+        """Append a timed-out crop name so the run can be reviewed later."""
+        timeout_log = self._timeout_log_path(pdf_name)
+        ensure_directory(timeout_log.parent)
+        with timeout_log.open("a", encoding="utf-8") as file_handle:
+            file_handle.write(f"{image_path.name}\n")
+
+    def _timeout_log_path(self, pdf_name: str) -> Path:
+        """Return the timeout log file path for a PDF run."""
+        return self.timed_out_entries_dir / f"{pdf_name}.txt"
+
+    @contextmanager
+    def _entry_timeout(self, image_path: Path) -> Iterator[None]:
+        """Abort a crop if processing exceeds the configured time budget."""
+        if self.entry_timeout_seconds <= 0 or not hasattr(signal, "setitimer"):
+            yield
+            return
+
+        previous_handler = signal.getsignal(signal.SIGALRM)
+
+        def _handle_timeout(signum: int, frame: object | None) -> None:
+            del signum, frame
+            raise EntryProcessingTimeoutError(f"Timed out while processing {image_path}")
+
+        signal.signal(signal.SIGALRM, _handle_timeout)
+        signal.setitimer(signal.ITIMER_REAL, float(self.entry_timeout_seconds))
+        try:
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            signal.signal(signal.SIGALRM, previous_handler)

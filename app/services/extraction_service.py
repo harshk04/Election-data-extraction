@@ -14,6 +14,7 @@ class ExtractionService:
     """Transform raw OCR output into structured voter records."""
 
     _SEPARATOR_PATTERN = r"(?:\s*[:\-–—]\s*|\s+)"
+    _DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
     _RELATION_PATTERNS: dict[str, tuple[str, ...]] = {
         "father": (
             "father",
@@ -21,6 +22,7 @@ class ExtractionService:
             "father name",
             "पिता का नाम",
             "पिता का नाभ",
+            "पिता का नाय",
             "पिता का नाम :",
             "पिता का नाम-",
         ),
@@ -30,6 +32,7 @@ class ExtractionService:
             "husband name",
             "पति का नाम",
             "पति का नाभ",
+            "पति का नाय",
             "पति का नाम :",
             "पति का नाम-",
         ),
@@ -37,6 +40,8 @@ class ExtractionService:
     _NAME_PATTERNS: tuple[str, ...] = (
         "elector name",
         "निर्वाचक का नाम",
+        "निवाचक का नाम",
+        "नवाचक का नाम",
         "मतदाता का नाम",
         "name",
     )
@@ -47,6 +52,9 @@ class ExtractionService:
         "मकान संख्या",
         "मकान सं",
         "घर संख्या",
+        "गृह संख्या",
+        "गृह संखया",
+        "गृह संक्या",
     )
     _AGE_PATTERNS: tuple[str, ...] = (
         "age",
@@ -57,6 +65,7 @@ class ExtractionService:
         "gender",
         "sex",
         "लिंग",
+        "िलंग",
     )
 
     def parse_voter_record(self, ocr_payload: OCRResult) -> VoterRecord:
@@ -65,18 +74,20 @@ class ExtractionService:
 
         ordered_lines = self._sort_lines(ocr_payload.lines)
         line_texts = self._clean_line_texts(ordered_lines)
-        raw_text = "\n".join(line_texts) if line_texts else None
+        row_texts = self._group_lines_into_rows(ordered_lines)
+        text_candidates = row_texts or line_texts
+        raw_text = "\n".join(text_candidates) if text_candidates else None
 
-        serial_number = self._extract_serial_number(line_texts)
-        epic_number = self._extract_epic_number(line_texts)
-        elector_name = self._extract_labeled_value(line_texts, self._NAME_PATTERNS)
-        relation_type, relation_name = self._extract_relation(line_texts)
-        house_number = self._extract_labeled_value(line_texts, self._HOUSE_PATTERNS)
-        age = self._extract_age(line_texts)
-        gender = self._extract_gender(line_texts)
+        serial_number = self._extract_serial_number(row_texts, line_texts)
+        epic_number = self._extract_epic_number(row_texts, line_texts)
+        elector_name = self._extract_labeled_value(row_texts, line_texts, self._NAME_PATTERNS)
+        relation_type, relation_name = self._extract_relation(row_texts, line_texts)
+        house_number = self._extract_labeled_value(row_texts, line_texts, self._HOUSE_PATTERNS)
+        age = self._extract_age(row_texts, line_texts)
+        gender = self._extract_gender(row_texts, line_texts)
 
         if elector_name is None:
-            elector_name = self._extract_name_fallback(line_texts, relation_name=relation_name)
+            elector_name = self._extract_name_fallback(text_candidates, relation_name=relation_name)
 
         return VoterRecord(
             serial_number=serial_number,
@@ -90,53 +101,60 @@ class ExtractionService:
             raw_text=raw_text,
         )
 
-    def _extract_serial_number(self, line_texts: list[str]) -> str | None:
+    def _extract_serial_number(self, row_texts: list[str], line_texts: list[str]) -> str | None:
         """Extract the voter serial number from OCR text."""
-        for text in line_texts:
+        for text in row_texts + line_texts:
             normalized = self._normalize_for_matching(text, keep_digits=True)
             label_match = re.search(
                 r"(?:serial|क्रमांक|क्रमांक संख्या|मतदाता क्रमांक)\s*[:\-–—]?\s*([A-Z0-9]{1,6})",
                 normalized,
             )
             if label_match:
-                return label_match.group(1)
+                return label_match.group(1).lstrip("0") or "0"
 
             q_match = re.search(r"\bQ\s*([0-9]{1,4})\b", normalized)
             if q_match:
-                return q_match.group(1)
+                return q_match.group(1).lstrip("0") or "0"
 
             leading_match = re.match(r"^\D{0,3}([0-9]{1,4})\b", normalized)
             if leading_match:
-                return leading_match.group(1)
+                return leading_match.group(1).lstrip("0") or "0"
         return None
 
-    def _extract_epic_number(self, line_texts: list[str]) -> str | None:
+    def _extract_epic_number(self, row_texts: list[str], line_texts: list[str]) -> str | None:
         """Extract the EPIC number from OCR text."""
-        for text in line_texts:
+        for text in row_texts + line_texts:
             normalized = self._normalize_for_matching(text, keep_digits=True)
             epic_match = re.search(r"\b([A-Z]{3}[0-9]{7})\b", normalized)
             if epic_match:
                 return epic_match.group(1)
 
             label_match = re.search(
-                r"(?:epic|photo identity card number|पहचान पत्र संख्या)\s*[:\-–—]?\s*([A-Z0-9]+)",
+                r"(?:epic|photo identity card number|पहचान पत्र संख्या)\s*[:\-–—]?\s*([A-Z0-9?]+)",
                 normalized,
             )
             if label_match:
-                return label_match.group(1)
+                candidate = self._repair_epic_candidate(label_match.group(1))
+                if candidate:
+                    return candidate
+
+            for token in re.findall(r"[A-Z0-9?]{8,12}", normalized):
+                candidate = self._repair_epic_candidate(token)
+                if candidate:
+                    return candidate
         return None
 
-    def _extract_relation(self, line_texts: list[str]) -> tuple[str | None, str | None]:
+    def _extract_relation(self, row_texts: list[str], line_texts: list[str]) -> tuple[str | None, str | None]:
         """Extract relation type and relation name from OCR text."""
         for relation_type, labels in self._RELATION_PATTERNS.items():
-            value = self._extract_labeled_value(line_texts, labels)
+            value = self._extract_labeled_value(row_texts, line_texts, labels)
             if value:
                 return relation_type, value
         return None, None
 
-    def _extract_age(self, line_texts: list[str]) -> int | None:
+    def _extract_age(self, row_texts: list[str], line_texts: list[str]) -> int | None:
         """Extract voter age while being tolerant to OCR noise."""
-        for text in line_texts:
+        for text in row_texts + line_texts:
             normalized = self._normalize_for_matching(text, keep_digits=True)
             label_match = re.search(r"(?:age|उम्र|आयु)\s*[:\-–—]?\s*([0-9]{1,3})", normalized)
             if label_match:
@@ -147,42 +165,48 @@ class ExtractionService:
                 return self._safe_int(fallback_match.group(1))
         return None
 
-    def _extract_gender(self, line_texts: list[str]) -> str | None:
+    def _extract_gender(self, row_texts: list[str], line_texts: list[str]) -> str | None:
         """Extract and normalize gender from OCR text."""
         gender_aliases = {
-            "male": ("male", "पुरुष", "mle", "maie"),
-            "female": ("female", "महिला", "femaie", "femaje", "fe male"),
+            "male": ("male", "पुरुष", "mle", "maie", "पुरष", "पुरूष", "पुंरंष"),
+            "female": ("female", "महिला", "मिहला", "femaie", "femaje", "fe male"),
             "other": ("other", "अन्य"),
         }
 
-        for text in line_texts:
+        for text in row_texts + line_texts:
             normalized = self._normalize_for_matching(text)
             for canonical, aliases in gender_aliases.items():
                 if any(alias in normalized for alias in aliases):
                     return canonical
         return None
 
-    def _extract_labeled_value(self, line_texts: list[str], labels: tuple[str, ...]) -> str | None:
+    def _extract_labeled_value(
+        self,
+        row_texts: list[str],
+        line_texts: list[str],
+        labels: tuple[str, ...],
+    ) -> str | None:
         """Extract a field value using label-based matching."""
-        for index, text in enumerate(line_texts):
-            normalized = self._normalize_for_matching(text, keep_digits=True)
-            for label in labels:
-                normalized_label = self._normalize_for_matching(label, keep_digits=True)
-                if normalized_label not in normalized:
-                    continue
+        for texts in (row_texts, line_texts):
+            for index, text in enumerate(texts):
+                normalized = self._normalize_for_matching(text, keep_digits=True)
+                for label in labels:
+                    normalized_label = self._normalize_for_matching(label, keep_digits=True)
+                    if normalized_label not in normalized:
+                        continue
 
-                value = self._extract_value_after_label(text, label)
-                if value:
-                    return value
+                    value = self._extract_value_after_label(text, label)
+                    if value:
+                        return value
 
-                next_line = line_texts[index + 1] if index + 1 < len(line_texts) else None
-                if next_line and not self._looks_like_label(next_line):
-                    return self._clean_field_value(next_line)
+                    next_line = texts[index + 1] if index + 1 < len(texts) else None
+                    if next_line and not self._looks_like_label(next_line):
+                        return self._clean_field_value(next_line)
         return None
 
     def _extract_name_fallback(self, line_texts: list[str], relation_name: str | None) -> str | None:
         """Fallback name extraction for OCR output missing clear labels."""
-        banned_tokens = {"male", "female", "other"}
+        banned_tokens = {"MALE", "FEMALE", "OTHER", "उम्र", "लिंग", "गृह", "EPIC", "PHOTO"}
         for text in line_texts:
             candidate = self._clean_field_value(text)
             if not candidate:
@@ -192,11 +216,13 @@ class ExtractionService:
                 continue
             if any(token in normalized for token in banned_tokens):
                 continue
-            if re.search(r"\b[A-Z]{3}[0-9]{7}\b", normalized):
+            if self._repair_epic_candidate(candidate):
                 continue
             if re.search(r"\b\d{1,4}\b", normalized) and len(candidate.split()) <= 2:
                 continue
             if self._looks_like_label(candidate):
+                continue
+            if len(candidate) <= 2:
                 continue
             return candidate
         return None
@@ -239,9 +265,126 @@ class ExtractionService:
                 cleaned_lines.append(cleaned)
         return cleaned_lines
 
+    def _group_lines_into_rows(self, lines: list[OCRTextLine]) -> list[str]:
+        """Join OCR fragments that belong to the same visual text row."""
+        if not lines:
+            return []
+
+        grouped_rows: list[list[OCRTextLine]] = []
+        current_row: list[OCRTextLine] = []
+        current_center_y = 0.0
+        current_height = 0.0
+
+        for line in lines:
+            if not self._clean_text(line.text):
+                continue
+
+            center_y = self._line_center_y(line)
+            height = self._line_height(line)
+            if not current_row:
+                current_row = [line]
+                current_center_y = center_y
+                current_height = height
+                continue
+
+            tolerance = max(current_height * 0.8, height * 0.8, 18.0)
+            if abs(center_y - current_center_y) <= tolerance:
+                current_row.append(line)
+                row_size = len(current_row)
+                current_center_y = (current_center_y * (row_size - 1) + center_y) / row_size
+                current_height = max(current_height, height)
+                continue
+
+            grouped_rows.append(current_row)
+            current_row = [line]
+            current_center_y = center_y
+            current_height = height
+
+        if current_row:
+            grouped_rows.append(current_row)
+
+        row_texts: list[str] = []
+        for row in grouped_rows:
+            ordered_row = sorted(row, key=self._line_min_x)
+            text = self._clean_text(" ".join(self._clean_text(item.text) for item in ordered_row))
+            if text:
+                row_texts.append(text)
+        return row_texts
+
+    def _repair_epic_candidate(self, candidate: str) -> str | None:
+        """Repair OCR-noisy EPIC tokens into the canonical AAA9999999 pattern."""
+        cleaned = re.sub(r"[^A-Za-z0-9?]", "", self._to_ascii_digits(candidate).upper())
+        if len(cleaned) < 8:
+            return None
+
+        for window_size in range(min(len(cleaned), 12), 9, -1):
+            for start in range(0, len(cleaned) - window_size + 1):
+                repaired = self._coerce_epic_window(cleaned[start : start + window_size])
+                if repaired:
+                    return repaired
+        return None
+
+    def _coerce_epic_window(self, token: str) -> str | None:
+        compact = token.replace("?", "")
+        if len(compact) < 10:
+            return None
+        compact = compact[:10]
+
+        prefix = "".join(self._coerce_epic_prefix_char(char) for char in compact[:3])
+        suffix = "".join(self._coerce_epic_digit_char(char) for char in compact[3:])
+        if len(prefix) != 3 or len(suffix) != 7:
+            return None
+
+        epic_number = prefix + suffix
+        if re.fullmatch(r"[A-Z]{3}[0-9]{7}", epic_number):
+            return epic_number
+        return None
+
+    @staticmethod
+    def _coerce_epic_prefix_char(char: str) -> str:
+        replacements = {
+            "0": "O",
+            "1": "I",
+            "2": "Z",
+            "4": "A",
+            "5": "S",
+            "6": "G",
+            "8": "B",
+            "A": "R",
+            "H": "R",
+        }
+        value = replacements.get(char.upper(), char.upper())
+        return value if "A" <= value <= "Z" else ""
+
+    @staticmethod
+    def _coerce_epic_digit_char(char: str) -> str:
+        replacements = {
+            "A": "4",
+            "B": "8",
+            "D": "0",
+            "E": "5",
+            "G": "6",
+            "I": "1",
+            "L": "1",
+            "O": "0",
+            "Q": "0",
+            "S": "5",
+            "T": "7",
+            "U": "0",
+            "Z": "2",
+        }
+        value = replacements.get(char.upper(), char.upper())
+        return value if value.isdigit() else ""
+
+    @classmethod
+    def _to_ascii_digits(cls, text: str) -> str:
+        """Convert Devanagari digits into ASCII digits."""
+        return text.translate(cls._DEVANAGARI_DIGITS)
+
     @staticmethod
     def _sort_lines(lines: list[OCRTextLine]) -> list[OCRTextLine]:
         """Sort OCR lines top-to-bottom then left-to-right."""
+
         def sort_key(line: OCRTextLine) -> tuple[float, float]:
             if not line.bounding_box:
                 return 0.0, 0.0
@@ -250,6 +393,26 @@ class ExtractionService:
             return min_y, min_x
 
         return sorted(lines, key=sort_key)
+
+    @staticmethod
+    def _line_center_y(line: OCRTextLine) -> float:
+        if not line.bounding_box:
+            return 0.0
+        values = [point.y for point in line.bounding_box]
+        return (min(values) + max(values)) / 2
+
+    @staticmethod
+    def _line_height(line: OCRTextLine) -> float:
+        if not line.bounding_box:
+            return 0.0
+        values = [point.y for point in line.bounding_box]
+        return max(values) - min(values)
+
+    @staticmethod
+    def _line_min_x(line: OCRTextLine) -> float:
+        if not line.bounding_box:
+            return 0.0
+        return min(point.x for point in line.bounding_box)
 
     @staticmethod
     def _clean_text(text: str) -> str:
@@ -261,7 +424,8 @@ class ExtractionService:
     @staticmethod
     def _normalize_for_matching(text: str, keep_digits: bool = False) -> str:
         """Normalize text for resilient label and regex matching."""
-        normalized = re.sub(r"\s+", " ", text).strip().upper()
+        normalized = re.sub(r"\s+", " ", text).strip()
+        normalized = normalized.translate(ExtractionService._DEVANAGARI_DIGITS).upper()
         if not keep_digits:
             normalized = normalized.replace("0", "O")
         return normalized.strip()
@@ -270,8 +434,9 @@ class ExtractionService:
     def _clean_field_value(value: str) -> str | None:
         """Normalize extracted field values."""
         cleaned = re.sub(r"\s+", " ", value).strip(" :-")
+        cleaned = cleaned.strip(" ?!.,;/")
         cleaned = re.sub(
-            r"\b(?:name|age|gender|sex|house no|house number|elector name)\b\s*[:\-–—]?",
+            r"\b(?:name|age|gender|sex|house no|house number|elector name|photo identity card number|epic)\b\s*[:\-–—]?",
             "",
             cleaned,
             flags=re.IGNORECASE,

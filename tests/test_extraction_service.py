@@ -126,3 +126,66 @@ def test_parse_voter_record_handles_missing_fields_gracefully() -> None:
     assert result.age is None
     assert result.gender is None
     assert result.raw_text == "Unclear entry text only"
+
+
+def test_parse_voter_record_reconstructs_fragmented_hindi_rows() -> None:
+    service = ExtractionService()
+    ocr_result = OCRResult(
+        lines=[
+            _line("३१", 30, 10),
+            _line("HDR2OTOB4E", 420, 12),
+            _line("निवाचक का नाम", 10, 60),
+            _line("गीता देवी", 180, 62),
+            _line("पति का नाम", 10, 98),
+            _line("कैलाश", 165, 100),
+            _line("गृह संख्या", 10, 136),
+            _line("8", 160, 138),
+            _line("उम्र", 10, 174),
+            _line("56", 80, 174),
+            _line("लिंग", 130, 174),
+            _line("महिला", 190, 174),
+        ]
+    )
+
+    result = service.parse_voter_record(ocr_result)
+
+    assert result.serial_number == "31"
+    assert result.epic_number == "RDR2070845"
+    assert result.elector_name == "गीता देवी"
+    assert result.relation_type == "husband"
+    assert result.relation_name == "कैलाश"
+    assert result.house_number == "8"
+    assert result.age == 56
+    assert result.gender == "female"
+
+
+def test_parse_voter_record_handles_deleted_q_serial_and_noisy_epic() -> None:
+    service = ExtractionService()
+    ocr_result = OCRResult(
+        lines=[
+            _line("Q", 25, 10),
+            _line("३३", 170, 10),
+            _line("ADR2417BO?", 420, 10),
+            _line("निवाचक का नाम", 10, 60),
+            _line("रोहिताश भट्टेल", 185, 60),
+            _line("पिता का नाम", 10, 96),
+            _line("बंशीधर", 170, 96),
+            _line("गृह संख्या", 10, 132),
+            _line("8", 160, 132),
+            _line("उम्र", 10, 168),
+            _line("45", 75, 168),
+            _line("लिंग", 130, 168),
+            _line("पुरुष", 190, 168),
+        ]
+    )
+
+    result = service.parse_voter_record(ocr_result)
+
+    assert result.serial_number == "33"
+    assert result.epic_number == "RDR2417806"
+    assert result.elector_name == "रोहिताश भट्टेल"
+    assert result.relation_type == "father"
+    assert result.relation_name == "बंशीधर"
+    assert result.house_number == "8"
+    assert result.age == 45
+    assert result.gender == "male"

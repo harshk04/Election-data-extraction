@@ -86,6 +86,14 @@ class Settings(BaseSettings):
         default=Path("outputs/classified_crops/normal"),
         alias="NORMAL_ENTRIES_DIR",
     )
+    entry_timeout_seconds: float = Field(
+        default=20.0,
+        alias="ENTRY_TIMEOUT_SECONDS",
+    )
+    timed_out_entries_dir: Path = Field(
+        default=Path("outputs/timed_out_entries"),
+        alias="TIMED_OUT_ENTRIES_DIR",
+    )
     validation_ocr_confidence_threshold: float = Field(
         default=0.8,
         alias="VALIDATION_OCR_CONFIDENCE_THRESHOLD",
