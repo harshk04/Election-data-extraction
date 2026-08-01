@@ -1,0 +1,11 @@
+/app/__pycache__
+/app/config/__pycache__
+/app/models/__pycache__
+/tests/__pycache__
+/outputs
+/app/api/__pycache__
+/data/crops
+/app/utils/__pycache__
+/__pycache__
+/app/services/__pycache__
+/data/pages

@@ -1,0 +1,110 @@
+"""Application settings loaded from environment variables."""
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Typed application settings."""
+
+    app_name: str = Field(default="Electoral Roll OCR", alias="APP_NAME")
+    app_env: str = Field(default="development", alias="APP_ENV")
+    app_debug: bool = Field(default=True, alias="APP_DEBUG")
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    log_dir: Path = Field(default=Path("outputs/logs"), alias="LOG_DIR")
+    log_file_name: str = Field(default="electoral_roll_ocr.log", alias="LOG_FILE_NAME")
+    log_to_file: bool = Field(default=True, alias="LOG_TO_FILE")
+    log_max_bytes: int = Field(default=5_242_880, alias="LOG_MAX_BYTES")
+    log_backup_count: int = Field(default=5, alias="LOG_BACKUP_COUNT")
+    data_dir: Path = Field(default=Path("data"), alias="DATA_DIR")
+    pdfs_dir: Path = Field(default=Path("data/pdfs"), alias="PDFS_DIR")
+    pages_dir: Path = Field(default=Path("data/pages"), alias="PAGES_DIR")
+    crops_dir: Path = Field(default=Path("data/crops"), alias="CROPS_DIR")
+    outputs_dir: Path = Field(default=Path("outputs"), alias="OUTPUTS_DIR")
+    preprocessing_debug_dir: Path = Field(
+        default=Path("outputs/preprocessing_debug"),
+        alias="PREPROCESSING_DEBUG_DIR",
+    )
+    preprocessing_enable_deskew: bool = Field(default=True, alias="PREPROCESSING_ENABLE_DESKEW")
+    preprocessing_enable_denoise: bool = Field(default=True, alias="PREPROCESSING_ENABLE_DENOISE")
+    preprocessing_enable_contrast: bool = Field(
+        default=True,
+        alias="PREPROCESSING_ENABLE_CONTRAST",
+    )
+    preprocessing_enable_threshold: bool = Field(
+        default=True,
+        alias="PREPROCESSING_ENABLE_THRESHOLD",
+    )
+    preprocessing_enable_border_cleanup: bool = Field(
+        default=True,
+        alias="PREPROCESSING_ENABLE_BORDER_CLEANUP",
+    )
+    preprocessing_clahe_clip_limit: float = Field(
+        default=2.0,
+        alias="PREPROCESSING_CLAHE_CLIP_LIMIT",
+    )
+    preprocessing_clahe_tile_grid_size: int = Field(
+        default=8,
+        alias="PREPROCESSING_CLAHE_TILE_GRID_SIZE",
+    )
+    preprocessing_threshold_block_size: int = Field(
+        default=31,
+        alias="PREPROCESSING_THRESHOLD_BLOCK_SIZE",
+    )
+    preprocessing_threshold_c: int = Field(default=15, alias="PREPROCESSING_THRESHOLD_C")
+    preprocessing_denoise_kernel_size: int = Field(
+        default=3,
+        alias="PREPROCESSING_DENOISE_KERNEL_SIZE",
+    )
+    preprocessing_border_margin: int = Field(default=12, alias="PREPROCESSING_BORDER_MARGIN")
+    grid_debug_dir: Path = Field(default=Path("outputs/grid_debug"), alias="GRID_DEBUG_DIR")
+    grid_min_width_ratio: float = Field(default=0.15, alias="GRID_MIN_WIDTH_RATIO")
+    grid_min_height_ratio: float = Field(default=0.05, alias="GRID_MIN_HEIGHT_RATIO")
+    grid_max_width_ratio: float = Field(default=0.4, alias="GRID_MAX_WIDTH_RATIO")
+    grid_max_height_ratio: float = Field(default=0.2, alias="GRID_MAX_HEIGHT_RATIO")
+    grid_horizontal_kernel_ratio: int = Field(default=30, alias="GRID_HORIZONTAL_KERNEL_RATIO")
+    grid_vertical_kernel_ratio: int = Field(default=30, alias="GRID_VERTICAL_KERNEL_RATIO")
+    crop_min_width: int = Field(default=40, alias="CROP_MIN_WIDTH")
+    crop_min_height: int = Field(default=40, alias="CROP_MIN_HEIGHT")
+    deleted_debug_dir: Path = Field(default=Path("outputs/deleted_debug"), alias="DELETED_DEBUG_DIR")
+    deleted_confidence_threshold: float = Field(
+        default=0.65,
+        alias="DELETED_CONFIDENCE_THRESHOLD",
+    )
+    deleted_watermark_min_score: float = Field(
+        default=0.2,
+        alias="DELETED_WATERMARK_MIN_SCORE",
+    )
+    deleted_entries_dir: Path = Field(
+        default=Path("outputs/classified_crops/deleted"),
+        alias="DELETED_ENTRIES_DIR",
+    )
+    normal_entries_dir: Path = Field(
+        default=Path("outputs/classified_crops/normal"),
+        alias="NORMAL_ENTRIES_DIR",
+    )
+    validation_ocr_confidence_threshold: float = Field(
+        default=0.8,
+        alias="VALIDATION_OCR_CONFIDENCE_THRESHOLD",
+    )
+    ocr_language: str = Field(default="hi", alias="OCR_LANGUAGE")
+    ocr_model_base_dir: Path = Field(
+        default=Path("outputs/paddleocr"),
+        alias="OCR_MODEL_BASE_DIR",
+    )
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """Return cached application settings."""
+    return Settings()
