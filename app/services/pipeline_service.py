@@ -130,8 +130,11 @@ class ElectoralRollPipelineService:
                         crop_path=crop_item.image_path,
                         is_deleted=deleted_result.deleted,
                     )
-                    record = self.extraction_service.parse_voter_record(ocr_result)
-                    record.deleted = deleted_result.deleted
+                    record = self.extraction_service.parse_voter_record(
+                        ocr_result,
+                        image_path=crop_item.image_path,
+                        deleted=deleted_result.deleted,
+                    )
                     self.validation_service.validate_record(record, ocr_result, deleted_result)
                     records.append(record)
                     if on_record_processed is not None:

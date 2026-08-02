@@ -1,7 +1,13 @@
 """Unit tests for OCR-to-JSON voter record extraction."""
 
+import json
+from pathlib import Path
+
 from app.models.image import OCRBoundingBoxPoint, OCRResult, OCRTextLine
+from app.config.settings import Settings
 from app.services.extraction_service import ExtractionService
+from app.services.llm_extraction_service import LLMExtractionService
+from app.models.voter import VoterRecord
 
 
 def _line(text: str, x_coord: float, y_coord: float) -> OCRTextLine:
@@ -189,3 +195,136 @@ def test_parse_voter_record_handles_deleted_q_serial_and_noisy_epic() -> None:
     assert result.house_number == "8"
     assert result.age == 45
     assert result.gender == "male"
+
+
+class FakeLLMExtractionService:
+    """Stub LLM extractor for unit tests."""
+
+    def __init__(self, record: VoterRecord | None = None, should_fail: bool = False) -> None:
+        self.record = record or VoterRecord(serial_number="99", epic_number="ABC1234567")
+        self.should_fail = should_fail
+
+    def extract_voter_record(self, image_path: Path, deleted: bool | None = None) -> VoterRecord:
+        del image_path
+        if self.should_fail:
+            raise RuntimeError("synthetic llm failure")
+        return self.record.model_copy(update={"deleted": deleted})
+
+
+def test_parse_voter_record_uses_llm_service_when_available() -> None:
+    service = ExtractionService(
+        extraction_backend="llm",
+        llm_extraction_service=FakeLLMExtractionService(
+            VoterRecord(
+                serial_number="77",
+                epic_number="XYZ7654321",
+                elector_name="सीमा",
+                relation_type="father",
+                relation_name="राजू",
+                house_number="12A",
+                age=41,
+                gender="female",
+            )
+        ),
+    )
+    ocr_result = OCRResult(lines=[_line("ignored because llm is active", 10, 10)])
+
+    result = service.parse_voter_record(
+        ocr_result,
+        image_path=Path("page_001_entry_001.png"),
+        deleted=True,
+    )
+
+    assert result.serial_number == "77"
+    assert result.elector_name == "सीमा"
+    assert result.deleted is True
+
+
+def test_parse_voter_record_falls_back_to_ocr_when_llm_fails_in_auto_mode() -> None:
+    service = ExtractionService(
+        extraction_backend="auto",
+        llm_extraction_service=FakeLLMExtractionService(should_fail=True),
+    )
+    ocr_result = OCRResult(
+        lines=[
+            _line("123 ABC1234567", 10, 10),
+            _line("Name: Suresh Kumar", 10, 40),
+            _line("पिता का नाम: Ramesh Kumar", 10, 70),
+            _line("House No: 42/A", 10, 100),
+            _line("Age: 34 Gender: Male", 10, 130),
+        ]
+    )
+
+    result = service.parse_voter_record(
+        ocr_result,
+        image_path=Path("page_001_entry_001.png"),
+        deleted=False,
+    )
+
+    assert result.serial_number == "123"
+    assert result.epic_number == "ABC1234567"
+    assert result.deleted is False
+
+
+class QualityRetryLLMService(LLMExtractionService):
+    """Stub LLM service that returns a weak extraction before a good one."""
+
+    def __init__(self) -> None:
+        settings = Settings(
+            GROQ_API_KEY="test-key",
+            GROQ_MODEL_ID="test-model",
+            GROQ_QUALITY_RETRIES=2,
+        )
+        self._responses = iter(
+            [
+                json.dumps(
+                    {
+                        "serial_number": "483",
+                        "epic_number": None,
+                        "elector_name": "िनवाचक का िरचा सवसैना",
+                        "relation_type": None,
+                        "relation_name": None,
+                        "house_number": None,
+                        "age": None,
+                        "gender": None,
+                        "confidence": 61,
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "serial_number": "483",
+                        "epic_number": "ABC1234567",
+                        "elector_name": "रिचा सवसैना",
+                        "relation_type": "husband",
+                        "relation_name": "संदीप सवसैना",
+                        "house_number": "50A",
+                        "age": 34,
+                        "gender": "female",
+                        "confidence": 87,
+                    },
+                    ensure_ascii=False,
+                ),
+            ]
+        )
+        super().__init__(settings)
+
+    def _build_client(self):  # type: ignore[no-untyped-def]
+        return object()
+
+    def _invoke_model(self, image_path: Path) -> str:
+        del image_path
+        return next(self._responses)
+
+
+def test_llm_extraction_retries_when_result_is_low_quality() -> None:
+    service = QualityRetryLLMService()
+
+    result = service.extract_voter_record(Path("page_001_entry_030.png"), deleted=False)
+
+    assert result.serial_number == "483"
+    assert result.elector_name == "रिचा सवसैना"
+    assert result.relation_name == "संदीप सवसैना"
+    assert result.house_number == "50A"
+    assert result.age == 34
+    assert result.gender == "female"

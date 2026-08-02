@@ -94,6 +94,18 @@ class Settings(BaseSettings):
         default=Path("outputs/timed_out_entries"),
         alias="TIMED_OUT_ENTRIES_DIR",
     )
+    extraction_backend: str = Field(default="auto", alias="EXTRACTION_BACKEND")
+    groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
+    groq_model_id: str | None = Field(default=None, alias="GROQ_MODEL_ID")
+    groq_base_url: str = Field(default="https://api.groq.com/openai/v1", alias="GROQ_BASE_URL")
+    groq_request_timeout_seconds: int = Field(
+        default=120,
+        alias="GROQ_REQUEST_TIMEOUT_SECONDS",
+    )
+    groq_max_retries: int = Field(default=3, alias="GROQ_MAX_RETRIES")
+    groq_quality_retries: int = Field(default=3, alias="GROQ_QUALITY_RETRIES")
+    groq_temperature: float = Field(default=0.0, alias="GROQ_TEMPERATURE")
+    groq_max_tokens: int = Field(default=256, alias="GROQ_MAX_TOKENS")
     validation_ocr_confidence_threshold: float = Field(
         default=0.8,
         alias="VALIDATION_OCR_CONFIDENCE_THRESHOLD",

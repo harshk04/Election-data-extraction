@@ -1,10 +1,14 @@
 """Service implementation for OCR-to-JSON voter record parsing."""
 
+import json
 import re
+from pathlib import Path
 from typing import Iterable
 
+from app.config.settings import get_settings
 from app.models.image import OCRResult, OCRTextLine
 from app.models.voter import VoterRecord
+from app.services.llm_extraction_service import LLMExtractionService
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -68,7 +72,64 @@ class ExtractionService:
         "िलंग",
     )
 
-    def parse_voter_record(self, ocr_payload: OCRResult) -> VoterRecord:
+    def __init__(
+        self,
+        extraction_backend: str | None = None,
+        llm_extraction_service: LLMExtractionService | None = None,
+    ) -> None:
+        settings = get_settings()
+        self.extraction_backend = (extraction_backend or settings.extraction_backend).strip().lower()
+        self._llm_extraction_service = llm_extraction_service
+
+        if self.extraction_backend not in {"auto", "ocr", "llm"}:
+            raise ValueError("EXTRACTION_BACKEND must be one of: auto, ocr, llm.")
+
+        if self._llm_extraction_service is None and self.extraction_backend in {"auto", "llm"}:
+            if settings.groq_api_key and settings.groq_model_id:
+                try:
+                    self._llm_extraction_service = LLMExtractionService(settings)
+                except Exception:
+                    if self.extraction_backend == "llm":
+                        raise
+                    logger.warning(
+                        "LLM extraction could not be initialized; defaulting to OCR parsing",
+                        exc_info=True,
+                    )
+            elif self.extraction_backend == "llm":
+                raise ValueError(
+                    "LLM extraction is enabled but GROQ_API_KEY or GROQ_MODEL_ID is missing."
+                )
+
+    def parse_voter_record(
+        self,
+        ocr_payload: OCRResult,
+        image_path: Path | None = None,
+        deleted: bool | None = None,
+    ) -> VoterRecord:
+        """Parse a voter record using LLM extraction or OCR fallback."""
+        if image_path is not None and self._llm_extraction_service is not None:
+            try:
+                record = self._llm_extraction_service.extract_voter_record(
+                    image_path=image_path,
+                    deleted=deleted,
+                )
+                if record.raw_text is None:
+                    record.raw_text = self._build_raw_text_from_ocr(ocr_payload)
+                return record
+            except Exception:
+                if self.extraction_backend == "llm":
+                    raise
+                logger.warning(
+                    "LLM extraction failed; falling back to OCR parsing",
+                    extra={"image_path": str(image_path)},
+                    exc_info=True,
+                )
+
+        record = self._parse_voter_record_from_ocr(ocr_payload)
+        record.deleted = deleted
+        return record
+
+    def _parse_voter_record_from_ocr(self, ocr_payload: OCRResult) -> VoterRecord:
         """Parse OCR output into a structured voter record."""
         logger.info("Parsing OCR payload into voter record")
 
@@ -100,6 +161,16 @@ class ExtractionService:
             gender=gender,
             raw_text=raw_text,
         )
+
+    def _build_raw_text_from_ocr(self, ocr_payload: OCRResult) -> str | None:
+        """Build a compact OCR text payload for diagnostics."""
+        ordered_lines = self._sort_lines(ocr_payload.lines)
+        line_texts = self._clean_line_texts(ordered_lines)
+        row_texts = self._group_lines_into_rows(ordered_lines)
+        text_candidates = row_texts or line_texts
+        if not text_candidates:
+            return None
+        return json.dumps({"ocr_text": text_candidates}, ensure_ascii=False)
 
     def _extract_serial_number(self, row_texts: list[str], line_texts: list[str]) -> str | None:
         """Extract the voter serial number from OCR text."""

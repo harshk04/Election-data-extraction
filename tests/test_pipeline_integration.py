@@ -82,9 +82,14 @@ class FakeOCRService:
 class FakeExtractionService:
     """Stub extraction service for pipeline integration tests."""
 
-    def parse_voter_record(self, ocr_payload: OCRResult) -> VoterRecord:
-        del ocr_payload
-        return VoterRecord(serial_number="1", epic_number="ABC1234567")
+    def parse_voter_record(
+        self,
+        ocr_payload: OCRResult,
+        image_path: Path | None = None,
+        deleted: bool | None = None,
+    ) -> VoterRecord:
+        del ocr_payload, image_path
+        return VoterRecord(serial_number="1", epic_number="ABC1234567", deleted=deleted)
 
 
 class FakeDeletedEntryService:
