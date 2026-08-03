@@ -10,7 +10,7 @@ from app.utils.logging import configure_logging, get_logger
 
 
 # Update this path when you want to process a different PDF.
-INPUT_PDF_PATH = Path("data/pdfs/Updated2.pdf")
+INPUT_PDF_PATH = Path("data/pdfs/FIle-1.pdf")
 
 # Leave as None to save into outputs/<pdf-name>.json automatically.
 OUTPUT_JSON_PATH: Path | None = None

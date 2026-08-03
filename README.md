@@ -1,6 +1,6 @@
 # Electoral Roll OCR
 
-Production-grade scaffold for an Electoral Roll OCR pipeline that processes scanned electoral roll PDFs and extracts voter records into structured JSON.
+Electoral roll extraction pipeline that processes a PDF, classifies each cropped entry as `normal` or `deleted`, then runs ordered LLM extraction to produce a single JSON output.
 
 ## Stack
 
@@ -36,7 +36,6 @@ tests/
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
 python main.py
 ```
 
@@ -64,13 +63,14 @@ PDFS_DIR=data/pdfs
 PAGES_DIR=data/pages
 CROPS_DIR=data/crops
 OUTPUTS_DIR=outputs
+GROQ_API_KEY=your_key_here
+GROQ_MODEL_ID=your_vision_model_here
+FAILED_CASES_DIR=outputs/failed_cases
 ```
-
-## Current Scope
 
 ## Running
 
-Basic run:
+Set the PDF path in [main.py](/Users/harsh/Desktop/Election-data-extraction/main.py:13), then run:
 
 ```bash
 python main.py
@@ -83,7 +83,7 @@ python main.py
 - Detects entry grid boxes
 - Crops voter entries
 - Detects deleted entries
-- Runs PaddleOCR
-- Extracts structured voter fields
-- Validates extracted records
-- Writes JSON output
+- Stores classified crops in `outputs/classified_crops/normal/<pdf-name>` and `outputs/classified_crops/deleted/<pdf-name>`
+- Reads those classified crops back in `page_xxx_entry_xxx` order across both folders
+- Sends each crop to the LLM and writes one ordered JSON file to `outputs/<pdf-name>.json`
+- Appends failed LLM cases to `outputs/failed_cases/<pdf-name>.txt`

@@ -6,9 +6,8 @@ from pathlib import Path
 import numpy as np
 
 import app.services.pipeline_service as pipeline_module
-from app.models.image import CropMetadata, DeletedEntryDetectionResult, EntryBoundingBox, OCRResult
+from app.models.image import CropMetadata, DeletedEntryDetectionResult, EntryBoundingBox
 from app.models.pdf import PageRenderMetadata
-from app.models.voter import ValidationReport, VoterRecord
 from app.services.pipeline_service import ElectoralRollPipelineService, EntryProcessingTimeoutError
 
 
@@ -73,23 +72,8 @@ class FakeGridService:
 class FakeOCRService:
     """Stub OCR service for pipeline integration tests."""
 
-    def run_ocr(self, image_path: Path) -> OCRResult:
-        if image_path.name.endswith("002.png"):
-            raise RuntimeError("synthetic entry OCR failure")
-        return OCRResult(lines=[])
-
-
-class FakeExtractionService:
-    """Stub extraction service for pipeline integration tests."""
-
-    def parse_voter_record(
-        self,
-        ocr_payload: OCRResult,
-        image_path: Path | None = None,
-        deleted: bool | None = None,
-    ) -> VoterRecord:
-        del ocr_payload, image_path
-        return VoterRecord(serial_number="1", epic_number="ABC1234567", deleted=deleted)
+    def initialize_engine(self) -> None:
+        return None
 
 
 class FakeDeletedEntryService:
@@ -98,19 +82,6 @@ class FakeDeletedEntryService:
     def detect_deleted_entry_from_path(self, image_path: Path) -> DeletedEntryDetectionResult:
         del image_path
         return DeletedEntryDetectionResult(deleted=False, confidence=0.9)
-
-
-class FakeValidationService:
-    """Stub validation service for pipeline integration tests."""
-
-    def validate_record(
-        self,
-        record: VoterRecord,
-        ocr_result: OCRResult,
-        deleted_result: DeletedEntryDetectionResult | None = None,
-    ) -> ValidationReport:
-        del record, ocr_result, deleted_result
-        return ValidationReport(is_valid=True)
 
 
 def test_process_pdf_continues_when_entry_and_page_fail(tmp_path: Path) -> None:
@@ -123,22 +94,23 @@ def test_process_pdf_continues_when_entry_and_page_fail(tmp_path: Path) -> None:
         image_service=FakeImageService(),
         grid_service=FakeGridService(),
         ocr_service=FakeOCRService(),
-        extraction_service=FakeExtractionService(),
         deleted_entry_service=FakeDeletedEntryService(),
-        validation_service=FakeValidationService(),
         crops_root_dir=tmp_path / "crops",
     )
 
     original_load_image = pipeline_module.load_image
     pipeline_module.load_image = lambda image_path: np.zeros((20, 20, 3), dtype=np.uint8)
     try:
-        records = pipeline.process_pdf(tmp_path / "sample.pdf")
+        classified_crops = pipeline.classify_pdf_entries(tmp_path / "sample.pdf")
     finally:
         pipeline_module.load_image = original_load_image
 
-    assert len(records) == 1
-    assert records[0].epic_number == "ABC1234567"
-    assert records[0].deleted is False
+    assert len(classified_crops) == 2
+    assert [crop.image_path.name for crop in classified_crops] == [
+        "page_001_entry_001.png",
+        "page_001_entry_002.png",
+    ]
+    assert all(crop.deleted is False for crop in classified_crops)
 
 
 def test_process_crops_records_timed_out_entries_and_continues(tmp_path: Path) -> None:
@@ -147,14 +119,12 @@ def test_process_crops_records_timed_out_entries_and_continues(tmp_path: Path) -
         image_service=FakeImageService(),
         grid_service=FakeGridService(),
         ocr_service=FakeOCRService(),
-        extraction_service=FakeExtractionService(),
         deleted_entry_service=FakeDeletedEntryService(),
-        validation_service=FakeValidationService(),
         crops_root_dir=tmp_path / "crops",
     )
     pipeline.timed_out_entries_dir = tmp_path / "timed_out_entries"
     pipeline._reset_timeout_log("sample")
-    pipeline._archive_classified_crop = lambda pdf_name, crop_path, is_deleted: None
+    pipeline._archive_classified_crop = lambda pdf_name, crop_path, is_deleted: crop_path
 
     crop_metadata = [
         CropMetadata(
@@ -187,9 +157,9 @@ def test_process_crops_records_timed_out_entries_and_continues(tmp_path: Path) -
 
     pipeline._entry_timeout = fake_entry_timeout  # type: ignore[method-assign]
 
-    records = pipeline._process_crops(tmp_path / "sample.pdf", crop_metadata)
+    classified_crops = pipeline._process_crops(tmp_path / "sample.pdf", crop_metadata)
 
-    assert len(records) == 1
-    assert records[0].serial_number == "1"
+    assert len(classified_crops) == 1
+    assert classified_crops[0].image_path.name == "page_001_entry_001.png"
     timeout_log = pipeline.timed_out_entries_dir / "sample.txt"
     assert timeout_log.read_text(encoding="utf-8").splitlines() == ["page_001_entry_002.png"]

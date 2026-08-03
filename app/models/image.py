@@ -71,6 +71,15 @@ class CropMetadata(BaseModel):
     image_path: Path
 
 
+class ClassifiedEntryImage(BaseModel):
+    """A classified crop ready for ordered downstream extraction."""
+
+    page: int
+    entry_index: int
+    image_path: Path
+    deleted: bool
+
+
 class DeletedEntryDetectionResult(BaseModel):
     """Classification result for deleted-entry detection."""
 

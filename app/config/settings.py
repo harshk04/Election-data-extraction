@@ -94,6 +94,10 @@ class Settings(BaseSettings):
         default=Path("outputs/timed_out_entries"),
         alias="TIMED_OUT_ENTRIES_DIR",
     )
+    failed_cases_dir: Path = Field(
+        default=Path("outputs/failed_cases"),
+        alias="FAILED_CASES_DIR",
+    )
     extraction_backend: str = Field(default="auto", alias="EXTRACTION_BACKEND")
     groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
     groq_model_id: str | None = Field(default=None, alias="GROQ_MODEL_ID")
