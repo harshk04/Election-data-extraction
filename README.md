@@ -1,6 +1,6 @@
 # Electoral Roll OCR
 
-Electoral roll extraction pipeline that processes a PDF, classifies each cropped entry as `normal` or `deleted`, then runs ordered LLM extraction to produce a single JSON output.
+Electoral roll extraction pipeline that processes a PDF, classifies each cropped entry as `normal` or `deleted`, then runs ordered OCR extraction to produce a single JSON output.
 
 ## Stack
 
@@ -46,6 +46,7 @@ PaddleOCR runtime note:
 - If your environment already has `paddle`, remove it first with `pip uninstall paddle`.
 - Then install a compatible `paddlepaddle` build for your platform by following the official PaddlePaddle installation guide: https://www.paddleocr.ai/main/en/version3.x/paddlepaddle_installation.html
 - The app defaults to Hindi OCR with models cached under `outputs/paddleocr` inside the project.
+- Each run writes a full timestamped log file under `logs/`.
 
 ## Environment Configuration
 
@@ -63,8 +64,8 @@ PDFS_DIR=data/pdfs
 PAGES_DIR=data/pages
 CROPS_DIR=data/crops
 OUTPUTS_DIR=outputs
-GROQ_API_KEY=your_key_here
-GROQ_MODEL_ID=your_vision_model_here
+LOG_DIR=logs
+LOG_FILE_NAME=electoral_roll_ocr
 FAILED_CASES_DIR=outputs/failed_cases
 ```
 
@@ -85,5 +86,5 @@ python main.py
 - Detects deleted entries
 - Stores classified crops in `outputs/classified_crops/normal/<pdf-name>` and `outputs/classified_crops/deleted/<pdf-name>`
 - Reads those classified crops back in `page_xxx_entry_xxx` order across both folders
-- Sends each crop to the LLM and writes one ordered JSON file to `outputs/<pdf-name>.json`
-- Appends failed LLM cases to `outputs/failed_cases/<pdf-name>.txt`
+- Runs OCR on each crop and writes one ordered JSON file to `outputs/<pdf-name>.json`
+- Appends failed extraction cases to `outputs/failed_cases/<pdf-name>.txt`

@@ -10,3 +10,4 @@
 /app/services/__pycache__
 /data/pages
 /.venv
+/logs

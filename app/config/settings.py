@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     app_env: str = Field(default="development", alias="APP_ENV")
     app_debug: bool = Field(default=True, alias="APP_DEBUG")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
-    log_dir: Path = Field(default=Path("outputs/logs"), alias="LOG_DIR")
-    log_file_name: str = Field(default="electoral_roll_ocr.log", alias="LOG_FILE_NAME")
+    log_dir: Path = Field(default=Path("logs"), alias="LOG_DIR")
+    log_file_name: str = Field(default="electoral_roll_ocr", alias="LOG_FILE_NAME")
     log_to_file: bool = Field(default=True, alias="LOG_TO_FILE")
     log_max_bytes: int = Field(default=5_242_880, alias="LOG_MAX_BYTES")
     log_backup_count: int = Field(default=5, alias="LOG_BACKUP_COUNT")
@@ -110,6 +110,13 @@ class Settings(BaseSettings):
     groq_quality_retries: int = Field(default=3, alias="GROQ_QUALITY_RETRIES")
     groq_temperature: float = Field(default=0.0, alias="GROQ_TEMPERATURE")
     groq_max_tokens: int = Field(default=256, alias="GROQ_MAX_TOKENS")
+    openai_bedrock_base_url: str = Field(
+        default="https://bedrock-mantle.ap-south-1.api.aws/v1",
+        alias="OPENAI_BEDROCK_BASE_URL",
+    )
+    openai_bedrock_api_key: str | None = Field(default=None, alias="OPENAI_BEDROCK_API_KEY")
+    openai_bedrock_model_id: str | None = Field(default=None, alias="OPENAI_BEDROCK_MODEL_ID")
+    openai_bedrock_project: str = Field(default="default", alias="OPENAI_BEDROCK_PROJECT")
     validation_ocr_confidence_threshold: float = Field(
         default=0.8,
         alias="VALIDATION_OCR_CONFIDENCE_THRESHOLD",

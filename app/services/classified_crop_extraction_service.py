@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from app.config.settings import get_settings
@@ -33,7 +34,11 @@ class ClassifiedCropExtractionService:
         self.failure_logs_dir = failure_logs_dir or settings.failed_cases_dir
         self.llm_extraction_service = llm_extraction_service or LLMExtractionService(settings)
 
-    def extract_pdf_records(self, pdf_name: str) -> list[VoterRecord]:
+    def extract_pdf_records(
+        self,
+        pdf_name: str,
+        on_record_extracted: Callable[[VoterRecord], None] | None = None,
+    ) -> list[VoterRecord]:
         """Extract ordered records from the classified crop directories for one PDF."""
         failure_log_path = self._failure_log_path(pdf_name)
         ensure_directory(failure_log_path.parent)
@@ -47,10 +52,13 @@ class ClassifiedCropExtractionService:
                     deleted=classified_crop.deleted,
                 )
                 records.append(record)
+                if on_record_extracted is not None:
+                    on_record_extracted(record)
             except Exception as error:
                 self._append_failure(
                     failure_log_path=failure_log_path,
                     classified_crop=classified_crop,
+                    error_type=type(error).__name__,
                     reason=str(error),
                 )
                 log_exception(
@@ -60,6 +68,8 @@ class ClassifiedCropExtractionService:
                     deleted=classified_crop.deleted,
                     page=classified_crop.page,
                     entry_index=classified_crop.entry_index,
+                    error_type=type(error).__name__,
+                    error=str(error),
                 )
 
         return records
@@ -97,12 +107,14 @@ class ClassifiedCropExtractionService:
         self,
         failure_log_path: Path,
         classified_crop: ClassifiedEntryImage,
+        error_type: str,
         reason: str,
     ) -> None:
         with failure_log_path.open("a", encoding="utf-8") as file_handle:
             file_handle.write(
                 f"{classified_crop.image_path.name}\tdeleted={classified_crop.deleted}\t"
                 f"page={classified_crop.page}\tentry={classified_crop.entry_index}\t"
+                f"error_type={error_type}\t"
                 f"reason={reason}\n"
             )
 

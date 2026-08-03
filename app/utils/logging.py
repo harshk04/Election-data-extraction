@@ -1,7 +1,7 @@
 """Centralized logging utilities."""
 
+from datetime import datetime
 import logging
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -74,12 +74,7 @@ def configure_logging() -> None:
 
     if settings.log_to_file:
         log_path = _prepare_log_path(settings.log_dir, settings.log_file_name)
-        file_handler = RotatingFileHandler(
-            filename=log_path,
-            maxBytes=settings.log_max_bytes,
-            backupCount=settings.log_backup_count,
-            encoding="utf-8",
-        )
+        file_handler = logging.FileHandler(filename=log_path, encoding="utf-8")
         file_handler.setLevel(root_logger.level)
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
@@ -98,6 +93,8 @@ def log_exception(logger: logging.Logger, message: str, **context: Any) -> None:
 
 
 def _prepare_log_path(log_dir: Path, log_file_name: str) -> Path:
-    """Ensure the log directory exists and return the final log file path."""
+    """Ensure the log directory exists and return the per-run log file path."""
     log_dir.mkdir(parents=True, exist_ok=True)
-    return log_dir / log_file_name
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_stem = Path(log_file_name).stem or "electoral_roll_ocr"
+    return log_dir / f"{safe_stem}_{timestamp}.log"

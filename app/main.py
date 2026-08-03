@@ -73,12 +73,14 @@ def run_pipeline(pdf_path: Path, output_path: Path) -> list[dict[str, Any]]:
         extra={"pdf_path": str(pdf_path), "classified_crop_count": len(classified_crops)},
     )
 
-    records = extractor.extract_pdf_records(pdf_path.stem)
+    records = extractor.extract_pdf_records(
+        pdf_path.stem,
+        on_record_extracted=lambda record: incremental_writer.append(record.model_dump()),
+    )
     serialized_records: list[dict[str, Any]] = []
     for record in records:
         record_payload = record.model_dump()
         serialized_records.append(record_payload)
-        incremental_writer.append(record_payload)
 
     logger.info(
         "Finished ordered LLM extraction",

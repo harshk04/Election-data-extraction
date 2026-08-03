@@ -96,3 +96,33 @@ def test_extract_pdf_records_logs_failures_and_continues_in_order(tmp_path: Path
     failure_text = failure_log.read_text(encoding="utf-8")
     assert "page_001_entry_005.png" in failure_text
     assert "reason=synthetic llm failure" in failure_text
+
+
+def test_extract_pdf_records_calls_callback_as_each_record_is_extracted(tmp_path: Path) -> None:
+    normal_dir = tmp_path / "normal"
+    deleted_dir = tmp_path / "deleted"
+    failure_dir = tmp_path / "failed"
+    pdf_name = "Updated2"
+
+    for image_path in (
+        normal_dir / pdf_name / "page_001_entry_001.png",
+        deleted_dir / pdf_name / "page_001_entry_002.png",
+    ):
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(b"test")
+
+    service = ClassifiedCropExtractionService(
+        llm_extraction_service=FakeLLMExtractionService(),
+        normal_entries_dir=normal_dir,
+        deleted_entries_dir=deleted_dir,
+        failure_logs_dir=failure_dir,
+    )
+
+    seen_serial_numbers: list[str | None] = []
+    records = service.extract_pdf_records(
+        pdf_name,
+        on_record_extracted=lambda record: seen_serial_numbers.append(record.serial_number),
+    )
+
+    assert seen_serial_numbers == ["page_001_entry_001", "page_001_entry_002"]
+    assert [record.serial_number for record in records] == seen_serial_numbers

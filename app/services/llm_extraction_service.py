@@ -36,6 +36,7 @@ Rules:
 15. Do not include labels like "निर्वाचक का नाम", "पति का नाम", "पिता का नाम", "गृह", "उम्र", or "लिंग" inside field values.
 16. elector_name must contain only the voter's name, not the full labeled line.
 17. relation_name must contain only the related person's name, not the full labeled line.
+18. If the top-left area has two small number boxes, serial_number must preserve both exactly as shown. For example, return 642 1 if the image shows 642 in the first box and 1 in the second box.
 
 Return JSON with exactly these keys:
 {
@@ -53,7 +54,7 @@ Return JSON with exactly these keys:
 
 
 class LLMExtractionService:
-    """Use a multimodal Groq model to extract structured fields from entry crops."""
+    """Use an OpenAI-compatible multimodal model to extract structured fields from entry crops."""
 
     _LABEL_FRAGMENTS = (
         "निर्वाचक",
@@ -78,7 +79,12 @@ class LLMExtractionService:
     def extract_voter_record(self, image_path: Path, deleted: bool | None = None) -> VoterRecord:
         """Extract a voter record directly from a crop image."""
         last_error: Exception | None = None
-        total_attempts = max(self._settings.groq_quality_retries, 1)
+        total_attempts = max(
+            self._settings.groq_quality_retries,
+            self._settings.groq_max_retries,
+            1,
+        )
+        response_text: str | None = None
 
         for attempt in range(1, total_attempts + 1):
             try:
@@ -90,18 +96,34 @@ class LLMExtractionService:
                 break
             except Exception as error:
                 last_error = error
-                if attempt >= total_attempts:
-                    raise RuntimeError(
-                        f"LLM extraction failed for {image_path.name}: {error}"
-                    ) from error
-                retry_delay_seconds = float(min(attempt, 3))
+                retryable = self._is_retryable_exception(error)
+                retry_delay_seconds = self._get_retry_delay_seconds(error, attempt)
                 logger.warning(
-                    "LLM extraction quality check failed; retrying crop",
+                    "LLM extraction validation failed",
                     extra={
                         "image_path": str(image_path),
                         "attempt": attempt,
                         "max_attempts": total_attempts,
+                        "error_type": type(error).__name__,
                         "error": str(error),
+                        "retryable": retryable,
+                        "retry_delay_seconds": retry_delay_seconds,
+                        "response_preview": self._preview_text(response_text),
+                    },
+                )
+                if attempt >= total_attempts:
+                    raise RuntimeError(
+                        f"LLM extraction failed for {image_path.name}: {error}"
+                    ) from error
+                logger.warning(
+                    "LLM extraction failed; retrying crop",
+                    extra={
+                        "image_path": str(image_path),
+                        "attempt": attempt,
+                        "max_attempts": total_attempts,
+                        "error_type": type(error).__name__,
+                        "error": str(error),
+                        "retryable": retryable,
                         "retry_delay_seconds": retry_delay_seconds,
                     },
                 )
@@ -111,7 +133,7 @@ class LLMExtractionService:
             raise RuntimeError(f"LLM extraction failed for {image_path.name}: {last_error}") from last_error
 
         return VoterRecord(
-            serial_number=self._clean_optional_string(payload.get("serial_number")),
+            serial_number=self._normalize_serial_number(payload.get("serial_number")),
             epic_number=self._clean_optional_string(payload.get("epic_number")),
             elector_name=self._clean_optional_string(payload.get("elector_name")),
             relation_type=self._normalize_relation_type(payload.get("relation_type")),
@@ -124,19 +146,22 @@ class LLMExtractionService:
         )
 
     def _build_client(self):  # type: ignore[no-untyped-def]
-        if not self._settings.groq_api_key or not self._settings.groq_model_id:
-            raise ValueError("GROQ_API_KEY and GROQ_MODEL_ID are required for LLM extraction")
+        if not self._settings.openai_bedrock_api_key or not self._settings.openai_bedrock_model_id:
+            raise ValueError(
+                "OPENAI_BEDROCK_API_KEY and OPENAI_BEDROCK_MODEL_ID are required for LLM extraction"
+            )
 
         try:
-            from groq import Groq
+            from openai import OpenAI
         except ImportError as error:
             raise RuntimeError(
-                "The 'groq' package is required for LLM extraction. Install project dependencies first."
+                "The 'openai' package is required for LLM extraction. Install project dependencies first."
             ) from error
 
-        return Groq(
-            api_key=self._settings.groq_api_key,
-            base_url=self._normalize_base_url(self._settings.groq_base_url),
+        return OpenAI(
+            api_key=self._settings.openai_bedrock_api_key,
+            base_url=self._normalize_base_url(self._settings.openai_bedrock_base_url),
+            default_headers={"OpenAI-Project": self._settings.openai_bedrock_project},
             timeout=self._settings.groq_request_timeout_seconds,
             max_retries=0,
         )
@@ -149,7 +174,7 @@ class LLMExtractionService:
             try:
                 started_at = time.perf_counter()
                 response = self._client.chat.completions.create(
-                    model=self._settings.groq_model_id,
+                    model=self._settings.openai_bedrock_model_id,
                     messages=[
                         {
                             "role": "system",
@@ -164,9 +189,7 @@ class LLMExtractionService:
                         },
                     ],
                     temperature=self._settings.groq_temperature,
-                    max_completion_tokens=self._settings.groq_max_tokens,
-                    top_p=0.95,
-                    reasoning_effort="none",
+                    max_tokens=self._settings.groq_max_tokens,
                 )
                 logger.info(
                     "LLM extraction completed",
@@ -206,11 +229,11 @@ class LLMExtractionService:
 
     @staticmethod
     def _normalize_base_url(base_url: str) -> str:
-        """Normalize Groq base URL so the client does not duplicate API path segments."""
+        """Normalize base URL so the client does not duplicate API path segments."""
         normalized = base_url.strip().rstrip("/")
-        if normalized.endswith("/openai/v1"):
-            normalized = normalized[: -len("/openai/v1")]
-        return normalized or "https://api.groq.com"
+        if normalized.endswith("/v1"):
+            return normalized
+        return f"{normalized}/v1" if normalized else "https://bedrock-mantle.ap-south-1.api.aws/v1"
 
     @staticmethod
     def _is_retryable_exception(error: Exception) -> bool:
@@ -264,6 +287,15 @@ class LLMExtractionService:
 
         raise ValueError("Model response did not contain text content")
 
+    @staticmethod
+    def _preview_text(raw_text: str | None, limit: int = 300) -> str | None:
+        if raw_text is None:
+            return None
+        compact = " ".join(raw_text.split())
+        if len(compact) <= limit:
+            return compact
+        return f"{compact[:limit]}..."
+
     def _parse_json_payload(self, raw_text: str) -> dict[str, object]:
         json_text = self._extract_json_object(raw_text)
         payload = json.loads(json_text)
@@ -273,7 +305,7 @@ class LLMExtractionService:
 
     def _get_quality_issue(self, payload: dict[str, object]) -> str | None:
         """Return a reason when the extraction is too weak to trust on the first pass."""
-        serial_number = self._clean_optional_string(payload.get("serial_number"))
+        serial_number = self._normalize_serial_number(payload.get("serial_number"))
         elector_name = self._clean_optional_string(payload.get("elector_name"))
         relation_name = self._clean_optional_string(payload.get("relation_name"))
         house_number = self._clean_optional_string(payload.get("house_number"))
@@ -336,6 +368,10 @@ class LLMExtractionService:
         text = str(value).strip()
         return text or None
 
+    @classmethod
+    def _normalize_serial_number(cls, value: object) -> str | None:
+        return cls._clean_optional_string(value)
+
     @staticmethod
     def _normalize_age(value: object) -> int | None:
         if value is None or value == "":
@@ -353,6 +389,10 @@ class LLMExtractionService:
         normalized = str(value).strip().lower()
         if normalized in {"male", "female"}:
             return normalized
+        if normalized in {"पुरुष", "male"}:
+            return "male"
+        if normalized in {"महिला", "female"}:
+            return "female"
         if normalized == "":
             return None
         raise ValueError(f"Invalid gender value returned by LLM: {value!r}")
