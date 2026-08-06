@@ -52,6 +52,24 @@ Return JSON with exactly these keys:
 }
 """.strip()
 
+SERIAL_NUMBER_PROMPT_TEMPLATE = """
+You are extracting only the serial number from a single cropped Indian voter-card image.
+
+Rules:
+1. Focus on the top-left serial-number boxes only.
+2. Return only valid JSON.
+3. Never guess missing digits or text.
+4. If the serial number is unreadable, return null.
+5. If the top-left area has two small number boxes, preserve both exactly as shown in one string separated by a single space.
+6. Preserve prefixes such as Q exactly.
+
+Return JSON with exactly these keys:
+{
+  "serial_number": string | null,
+  "confidence": integer
+}
+""".strip()
+
 
 class LLMExtractionService:
     """Use an OpenAI-compatible multimodal model to extract structured fields from entry crops."""
@@ -85,11 +103,11 @@ class LLMExtractionService:
             1,
         )
         response_text: str | None = None
+        model_used: str | None = None
 
         for attempt in range(1, total_attempts + 1):
             try:
-                response_text = self._invoke_model(image_path)
-                payload = self._parse_json_payload(response_text)
+                payload, response_text, model_used = self._extract_best_payload(image_path)
                 quality_issue = self._get_quality_issue(payload)
                 if quality_issue is not None:
                     raise ValueError(f"Low-quality extraction: {quality_issue}")
@@ -108,6 +126,7 @@ class LLMExtractionService:
                         "error": str(error),
                         "retryable": retryable,
                         "retry_delay_seconds": retry_delay_seconds,
+                        "model": model_used,
                         "response_preview": self._preview_text(response_text),
                     },
                 )
@@ -125,6 +144,7 @@ class LLMExtractionService:
                         "error": str(error),
                         "retryable": retryable,
                         "retry_delay_seconds": retry_delay_seconds,
+                        "model": model_used,
                     },
                 )
                 time.sleep(retry_delay_seconds)
@@ -144,6 +164,62 @@ class LLMExtractionService:
             deleted=deleted,
             raw_text=json.dumps(payload, ensure_ascii=False),
         )
+
+    def _extract_best_payload(self, image_path: Path) -> tuple[dict[str, object], str, str]:
+        """Run primary extraction and selectively escalate when quality is weak."""
+        primary_model = self._settings.openai_bedrock_model_id
+        if primary_model is None:
+            raise ValueError("OPENAI_BEDROCK_MODEL_ID is required for LLM extraction")
+
+        primary_response = self._invoke_model(
+            image_path=image_path,
+            model_id=primary_model,
+            prompt_text=PROMPT_TEMPLATE,
+        )
+        primary_payload = self._parse_json_payload(primary_response)
+        repaired_primary_payload = self._recover_missing_serial_number(
+            image_path=image_path,
+            payload=primary_payload,
+            model_id=primary_model,
+        )
+        primary_quality = self._get_quality_issue(repaired_primary_payload)
+        if primary_quality is None:
+            return repaired_primary_payload, json.dumps(repaired_primary_payload, ensure_ascii=False), primary_model
+
+        fallback_model = self._settings.openai_bedrock_fallback_model_id
+        if fallback_model and fallback_model != primary_model:
+            fallback_response = self._invoke_model(
+                image_path=image_path,
+                model_id=fallback_model,
+                prompt_text=PROMPT_TEMPLATE,
+            )
+            fallback_payload = self._parse_json_payload(fallback_response)
+            repaired_fallback_payload = self._recover_missing_serial_number(
+                image_path=image_path,
+                payload=fallback_payload,
+                model_id=fallback_model,
+            )
+            fallback_quality = self._get_quality_issue(repaired_fallback_payload)
+            if fallback_quality is None:
+                logger.info(
+                    "LLM extraction succeeded with fallback model",
+                    extra={"image_path": str(image_path), "fallback_model": fallback_model},
+                )
+                return (
+                    repaired_fallback_payload,
+                    json.dumps(repaired_fallback_payload, ensure_ascii=False),
+                    fallback_model,
+                )
+
+            better_payload, better_model = self._choose_better_payload(
+                primary_payload=repaired_primary_payload,
+                fallback_payload=repaired_fallback_payload,
+                primary_model=primary_model,
+                fallback_model=fallback_model,
+            )
+            return better_payload, json.dumps(better_payload, ensure_ascii=False), better_model
+
+        return repaired_primary_payload, json.dumps(repaired_primary_payload, ensure_ascii=False), primary_model
 
     def _build_client(self):  # type: ignore[no-untyped-def]
         if not self._settings.openai_bedrock_api_key or not self._settings.openai_bedrock_model_id:
@@ -166,7 +242,7 @@ class LLMExtractionService:
             max_retries=0,
         )
 
-    def _invoke_model(self, image_path: Path) -> str:
+    def _invoke_model(self, image_path: Path, model_id: str, prompt_text: str) -> str:
         image_url = self._build_data_url(image_path)
         last_error: Exception | None = None
 
@@ -174,7 +250,7 @@ class LLMExtractionService:
             try:
                 started_at = time.perf_counter()
                 response = self._client.chat.completions.create(
-                    model=self._settings.openai_bedrock_model_id,
+                    model=model_id,
                     messages=[
                         {
                             "role": "system",
@@ -183,7 +259,7 @@ class LLMExtractionService:
                         {
                             "role": "user",
                             "content": [
-                                {"type": "text", "text": PROMPT_TEMPLATE},
+                                {"type": "text", "text": prompt_text},
                                 {"type": "image_url", "image_url": {"url": image_url}},
                             ],
                         },
@@ -195,6 +271,7 @@ class LLMExtractionService:
                     "LLM extraction completed",
                     extra={
                         "image_path": str(image_path),
+                        "model": model_id,
                         "latency_seconds": round(time.perf_counter() - started_at, 3),
                     },
                 )
@@ -210,6 +287,7 @@ class LLMExtractionService:
                         "attempt": attempt,
                         "max_retries": self._settings.groq_max_retries,
                         "error": str(error),
+                        "model": model_id,
                         "retryable": retryable,
                         "retry_delay_seconds": retry_delay_seconds,
                     },
@@ -313,7 +391,14 @@ class LLMExtractionService:
         age = payload.get("age")
         gender = self._clean_optional_string(payload.get("gender"))
 
-        if serial_number is None:
+        populated_secondary_fields = sum(
+            value is not None and value != ""
+            for value in (epic_number, relation_name, house_number, gender)
+        )
+        if age is not None:
+            populated_secondary_fields += 1
+
+        if serial_number is None and populated_secondary_fields < 3:
             return "serial_number is missing"
         if elector_name is None:
             return "elector_name is missing"
@@ -322,19 +407,69 @@ class LLMExtractionService:
         if relation_name is not None and self._looks_like_labeled_line(relation_name):
             return "relation_name still contains labels or non-name text"
 
-        populated_secondary_fields = sum(
-            value is not None and value != ""
-            for value in (epic_number, relation_name, house_number, gender)
-        )
-        if age is not None:
-            populated_secondary_fields += 1
-
         if populated_secondary_fields == 0:
             return "all secondary fields are missing"
         if epic_number is None and relation_name is None and house_number is None and age is None and gender is None:
             return "epic, relation, house, age, and gender are all missing"
 
         return None
+
+    def _recover_missing_serial_number(
+        self,
+        image_path: Path,
+        payload: dict[str, object],
+        model_id: str,
+    ) -> dict[str, object]:
+        """Run a focused serial-number pass when the main extraction missed it."""
+        if self._normalize_serial_number(payload.get("serial_number")) is not None:
+            return payload
+
+        serial_response = self._invoke_model(
+            image_path=image_path,
+            model_id=model_id,
+            prompt_text=SERIAL_NUMBER_PROMPT_TEMPLATE,
+        )
+        serial_payload = self._parse_json_payload(serial_response)
+        serial_number = self._normalize_serial_number(serial_payload.get("serial_number"))
+        if serial_number is None:
+            return payload
+
+        merged_payload = dict(payload)
+        merged_payload["serial_number"] = serial_number
+        logger.info(
+            "Recovered serial number with targeted extraction",
+            extra={"image_path": str(image_path), "model": model_id, "serial_number": serial_number},
+        )
+        return merged_payload
+
+    def _choose_better_payload(
+        self,
+        primary_payload: dict[str, object],
+        fallback_payload: dict[str, object],
+        primary_model: str,
+        fallback_model: str,
+    ) -> tuple[dict[str, object], str]:
+        """Prefer the payload with more populated useful fields when both are imperfect."""
+        primary_score = self._payload_completeness_score(primary_payload)
+        fallback_score = self._payload_completeness_score(fallback_payload)
+
+        if fallback_score > primary_score:
+            return fallback_payload, fallback_model
+        return primary_payload, primary_model
+
+    def _payload_completeness_score(self, payload: dict[str, object]) -> int:
+        fields = (
+            self._normalize_serial_number(payload.get("serial_number")),
+            self._clean_optional_string(payload.get("epic_number")),
+            self._clean_optional_string(payload.get("elector_name")),
+            self._clean_optional_string(payload.get("relation_name")),
+            self._clean_optional_string(payload.get("house_number")),
+            self._clean_optional_string(payload.get("gender")),
+        )
+        score = sum(value is not None and value != "" for value in fields)
+        if payload.get("age") is not None:
+            score += 1
+        return score
 
     def _looks_like_labeled_line(self, value: str) -> bool:
         """Detect values that still include field labels instead of just the extracted name."""

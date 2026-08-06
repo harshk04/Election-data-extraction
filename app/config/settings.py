@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     )
     openai_bedrock_api_key: str | None = Field(default=None, alias="OPENAI_BEDROCK_API_KEY")
     openai_bedrock_model_id: str | None = Field(default=None, alias="OPENAI_BEDROCK_MODEL_ID")
+    openai_bedrock_fallback_model_id: str | None = Field(
+        default="google.gemma-3-27b-it",
+        alias="OPENAI_BEDROCK_FALLBACK_MODEL_ID",
+    )
     openai_bedrock_project: str = Field(default="default", alias="OPENAI_BEDROCK_PROJECT")
     validation_ocr_confidence_threshold: float = Field(
         default=0.8,

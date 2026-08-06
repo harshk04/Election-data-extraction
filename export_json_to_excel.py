@@ -16,8 +16,9 @@ HEADER_LABELS = {
     "age": "Age",
     "gender": "Gender",
     "deleted": "Deleted",
-    "raw_text": "Raw Text",
 }
+
+EXCLUDED_HEADERS = {"raw_text"}
 
 GENDER_LABELS = {
     "male": "पुरुष",
@@ -59,6 +60,8 @@ def collect_headers(rows: list[dict[str, object]]) -> list[str]:
     seen: set[str] = set()
     for row in rows:
         for key in row:
+            if key in EXCLUDED_HEADERS:
+                continue
             if key not in seen:
                 seen.add(key)
                 headers.append(key)
